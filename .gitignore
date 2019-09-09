@@ -1,0 +1,15 @@
+*.DS_Store
+*.Rhistory
+misc/*
+raw_data/*
+simulation_results.csv
+simulation_results2.csv
+other_code/*
+old_files/*
+*.pdf
+*.tex
+*.log
+pnas_submission/*
+pnas_re_submission/*
+manuscript_draft_now_on_overleaf/*
+Additional_figures.R
