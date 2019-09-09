@@ -1,0 +1,12 @@
+Fits stepping-stone dispersal models (Poisson and Poisson-gamma) described in the Science 2009 paper.
+
+The main program is dispersal_assay_science.r. It should match with the results in the paper (table S1 - the best fit is Dirichlet-multinomial-Poisson, whereas the fatter tail would be Poisson-gamma of either flavor).
+
+The dispersal models are called like this:
+Diff(c(1,rep(0,6)),1,D,0)
+The first argument c(1,rep(0,6)) is a vector of initial conditions (1,0,0,0,0,0,0) in this case, indicating starting in patch 1. If you had 8 patches, you would have c(1,rep(0,7)). The second argument, 1, is the unit of time. This corresponds to 48 hours in our experiment. So you would change this to reflect however many hours in your experiment.
+
+Similarly, for the Poisson-gamma model:
+DiffvarD_LAint(c(1,rep(0,6)),1,D,k)
+
+You can also use the replicates in the data file for empirical kernels.
