@@ -1,0 +1,4 @@
+
+# clean_data notes
+
+Beetle control started on Feb 30th and generation 6 ended on Nov 13th
