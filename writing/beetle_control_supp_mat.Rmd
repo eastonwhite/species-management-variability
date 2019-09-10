@@ -1,0 +1,709 @@
+---
+editor_options:
+  chunk_output_type: console
+documentclass: pnas-new
+classoption: twoside
+font_size: 9pt
+header-includes: |-
+ \usepackage{longtable}
+ \usepackage{tabu}
+ \usepackage{threeparttable}
+ \usepackage{threeparttablex}
+ \templatetype{pnassupportinginfo}
+ \title{Ecological management success and failure is highly stochastic: an experimental test}
+ \author{Easton R. White, Kyle Cox, Brett A. Melbourne, and Alan Hastings}
+ \correspondingauthor{Easton R. White.\\E-mail: eastonrwhite@gmail.com}
+output:
+  pdf_document:
+    keep_tex: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'h')
+```
+
+
+
+\maketitle
+
+
+
+
+<!--  
+\medskip
+\medskip
+\medskip
+\scalebox{1}{
+
+	\begin{tabular}{r |@{\foo} l}
+		
+		Day 1   & Adults removed (leaving eggs) \\
+		Day 2   & \\
+		\vdots  & Growth and development from eggs to adults \\
+		Day 40 & \\
+		Day 41  & Adults allowed to disperse for 1, 6, or 24 hours \\
+		Day 42  & Change medium and count adults \\
+		            & Some adults added back to chambers after ``harvesting mortality" \\
+		            & Adults are allowed to lay eggs for 24 hours (no dispersal allowed)
+
+	\end{tabular}
+}
+-->
+
+
+
+```{r experiment_temp_humidity, echo=F,message=F,warning=F,cache = T, fig.cap='(a) Temperature (celsius) and (b) relative humidity inside the incubator during the experiment.\\label{fig:incubator4}'}
+# Incubator 4 which is for BeetleControl
+incubator4 = read.csv('../clean_data/Incubator4_May_Oct2018.csv',header=T)
+incubator4$date_time = as.character(incubator4$date_time)
+incubator4$date_time = strptime(incubator4$date_time,format='%m/%d/%y %H:%M')
+incubator4$temp_C = (incubator4$temp_F - 32)/1.8
+
+par(mfrow=c(1,2))
+plot(incubator4$date_time,incubator4$temp_C,las=2,ylab='',xlab='',pch=16,cex.axis=1.2)
+  mtext(text = 'Temperature (celsius)',side = 2,line = 2.5,cex=1.2)
+  mtext(paste('mean = ',round(mean(incubator4$temp_C),1),sep=''),side = 3,line = 1)
+  mtext(paste('sd = ',round(sd(incubator4$temp_C),1),sep=''),side = 3,line = 0.2)
+plot(incubator4$date_time,incubator4$RH,las=2,ylab='',xlab='',pch=16,cex.axis=1.2)
+  mtext(text = 'Relative humidity',side = 2,line = 2.5,cex=1.2)
+  mtext(paste('mean = ',round(mean(incubator4$RH),1),sep=''),side = 3,line = 1)
+  mtext(paste('sd = ',round(sd(incubator4$RH),1),sep=''),side = 3,line = 0.2)
+
+  mtext(text = 'Date',side = 1,line = -2,cex=1.2,outer = T)
+```
+
+
+\FloatBarrier
+
+
+
+
+
+
+
+```{r,echo=F,eval=F,warning=F,message=F,cache=T,fig.cap='Number of beetles present in each patch within a landscape after one generation and dispersal. There are five different dispersal times (1, 6, 12, 24, and 48 hours). The boxplot bold lines, box widths, and whiskers represent the median, the middle 50th percentile, and 1.5 times the inter-quartile range, respectively'}
+
+# Dispersal side experiment from Kyle
+dispersal <- read.csv('../clean_data/dispersal_experiment_clean.csv',stringsAsFactors = FALSE,header=T)
+dispersal$final_count = dispersal$total_count
+dispersal$final_count[is.na(dispersal$final_count)] = 50*dispersal$total_weight[is.na(dispersal$final_count)] / dispersal$total_w50[is.na(dispersal$final_count)] 
+
+require(ggplot2)
+require(dplyr)
+
+dispersal$patch = as.character(dispersal$patch)
+
+ggplot(aes(patch,y=final_count),data=dispersal) + geom_boxplot() +geom_point() + facet_wrap(~dTime) +
+   xlab("Patch number") +
+   ylab("Number of beetles") +
+   theme_classic(base_size = 14, base_family = "")
+
+```
+
+
+
+
+
+
+```{r,echo=F,eval=F,message=F,error=F}
+# This code simply cleans up dispersal data so we can find dispersal parameter values in the next chunk
+
+#Put in code to fit kernels here
+dispersal48 = subset(dispersal,dispersal$dTime==48)
+dispersal24 = subset(dispersal,dispersal$dTime==24)
+dispersal12 = subset(dispersal,dispersal$dTime==12)
+dispersal6 = subset(dispersal,dispersal$dTime==6)
+dispersal1 = subset(dispersal,dispersal$dTime==1)
+
+
+par(mfrow=c(2,3))
+all_data=NULL
+for (dispersal_times in c(1,6,12,24,48)){
+
+  dTime = dispersal_times
+  
+  dispersal_subset <- get(paste('dispersal',dTime,sep=''))
+  
+  mydatawide <- reshape(dispersal_subset[,c('landscape','patch','final_count')],
+                        idvar=c("landscape"),
+                        timevar="patch",direction="wide")
+  datamat <- as.matrix(mydatawide[,-(1)])
+  rownames(datamat) <- colnames(datamat) <- NULL
+  #datamat = cbind(datamat,rep(0,12))
+  datamat= round(datamat)
+  
+  all_data = rbind(all_data,cbind(datamat,rep(dTime,times=nrow(datamat))))
+}
+write.csv(all_data,'../clean_data/all_dispersal_data.csv',row.names = F)
+```
+
+
+
+
+```{r,echo=F,warning=F,message=F,cache=T}
+
+# This code chunk finds the best dispersal kernel while taking into account differences in dispersal times
+
+library(stats4)
+library(emdbook) #for betabinomial
+library(gtools)
+
+# Required scripts
+source('../scripts/model_fitting/Diff2.r')
+source('../scripts/model_fitting/dirichletmultinom.r')
+#source('../scripts/model_fitting/DiffvarD_LAint.r')
+
+# Pull in all dispersal experiment data (including dispersal times of 1,6,12,24,48)
+datamat <- read.csv('../clean_data/all_dispersal_data.csv')
+
+dTime = datamat[,7]
+datamat = datamat[,1:6]
+
+# Use different times in analysis
+diffpolyapois.nll <- function(D,s){
+     n <- nrow(datamat)
+     lnlik <- rep(NA,n)
+     for ( i in 1:n ) { # Loop through different replicates
+         #s <- exp(lns)  #Sometimes helpful to constrain positive
+         #Divide by 48 gives same scale as Melbourne and Hastings.
+         kbinompois <- Diff(c(1,rep(0,5)),dTime[i]/48,D)
+         lnlik[i] <- dpolya(datamat[i,],alpha=s*kbinompois,log=TRUE)
+     }
+     return(-sum(lnlik))
+}
+
+llfit <- mle(
+diffpolyapois.nll,start=list(D=0.3,s=30),lower=0.01,method='L-BFGS-B')
+
+# Paramter estimates
+phat_dispersal <- coef(llfit)
+
+# Confidence intervals
+confint_dispersal <- confint(profile(llfit)) 
+```
+
+
+
+
+```{r,echo=F,warning=F,message=F,cache=T,fig.cap='Simulated number of beetles present in each patch within a landscape after one generation and dispersal for best fitting model parameters. There are five different dispersal times (1, 6, 12, 24, and 48 hours).\\label{fig:dispersal}'}
+
+
+# Required packages
+library(stats4)
+library(emdbook) #for betabinomial
+library(gtools)
+
+# Required scripts
+source('../scripts/model_fitting/Diff2.r')
+source('../scripts/model_fitting/dirichletmultinom.r')
+source('../scripts/model_fitting/DiffvarD_LAint.r')
+
+dispersal <- read.csv('../clean_data/all_dispersal_data.csv')
+
+#dTime = datamat[,7]
+#datamat = datamat[,1:6]
+
+#Put in code to fit kernels here
+#dispersal48 = subset(dispersal,dispersal$dTime==48)
+#dispersal24 = subset(dispersal,dispersal$dTime==24)
+#dispersal12 = subset(dispersal,dispersal$dTime==12)
+#dispersal6 = subset(dispersal,dispersal$dTime==6)
+#dispersal1 = subset(dispersal,dispersal$dTime==1)
+
+
+par(mfrow=c(2,3))
+for (dispersal_times in c(1,6,12,24,48)){
+
+  dTime = dispersal_times
+  
+  #dispersal_subset <- get(paste('dispersal',dTime,sep=''))
+  datamat <- dispersal[dispersal[,7]==dTime,1:6]
+  
+  # mydatawide <- reshape(dispersal_subset[,c('landscape','patch','final_count')],
+  #                       idvar=c("landscape"),
+  #                       timevar="patch",direction="wide")
+  # datamat <- as.matrix(mydatawide[,-(1)])
+  # rownames(datamat) <- colnames(datamat) <- NULL
+  # #datamat = cbind(datamat,rep(0,12))
+  # datamat= round(datamat)
+  
+  
+  # Build plot for each dispersal kernel
+  set.seed(4) #4 for science paper
+  matplot(1:6,t(datamat),type="n",xlab="Patch",ylab="Abundance",las=1,main=paste('dispersal time = ',dTime,sep=''),ylim=c(0,350))
+  #Overlay simulation
+  Ninit <- rowSums(datamat)
+  kbinompois <- Diff(c(1,rep(0,5)),dTime/48,phat_dispersal[1]) #Kernel can be outside loop
+  for (i in 1:24){
+    n <- sample(Ninit,1,replace=TRUE) #Bootstrap n
+    tmp <- rdirichlet(1,phat_dispersal[2]*kbinompois)
+    sim <- rmultinom(1,n,tmp)
+    lines(jitter((1:6),0.2),sim,col="black")
+  }
+  matpoints(1:6,t(datamat),pch=16,col="red",cex=1.5)
+  #lines(1:6,Diff(c(colMeans(datamat)[1],rep(0,5)),1,phat[1]),col="black",lwd=4)
+}
+
+  matplot(1:6,t(datamat),type="n",xaxt='n',yaxt='n',ylab='',xlab='',bty='n')
+  legend('center',c("Simulation","Experimental"),col=c("black","red"),pch=c(1,16),pt.cex=c(0,2),lty=c(1,0),cex=1.2)
+
+```
+
+
+\FloatBarrier
+
+
+
+
+
+
+
+
+
+```{r,echo=F,warning=F,message=F,cache=T,fig.cap='Number of adults after one generation (six weeks), N(t+1), versus the initial number of adults, N(t).'}
+require(dplyr)
+
+
+
+# Ricker data
+ricker <- read.csv('../clean_data/confusedRicker_clean.csv',stringsAsFactors = FALSE)
+ricker$final_count = ricker$total_count
+ricker$final_count[is.na(ricker$final_count)] = 50*ricker$total_weight[is.na(ricker$final_count)] / ricker$total_w50[is.na(ricker$final_count)] 
+
+# Add data from dispersal experiment (at 75 initial count)
+# Dispersal side experiment from Kyle
+dispersal <- read.csv('../clean_data/dispersal_experiment_clean.csv',stringsAsFactors = FALSE,header=T)
+dispersal$final_count = dispersal$total_count
+dispersal$final_count[is.na(dispersal$final_count)] = 50*dispersal$total_weight[is.na(dispersal$final_count)] / dispersal$total_w50[is.na(dispersal$final_count)] 
+
+dispersal_ricker = dispersal %>%
+  group_by(dTime,landscape) %>%
+  summarize(Ntp1 = sum(final_count))
+
+dispersal_ricker = data.frame(rep(75,nrow(dispersal_ricker)),rep(NA,nrow(dispersal_ricker)),1:nrow(dispersal_ricker),rep('5-Jun',nrow(dispersal_ricker)),dispersal_ricker$Ntp1,rep(NA,nrow(dispersal_ricker)),rep(NA,nrow(dispersal_ricker)),rep(NA,nrow(dispersal_ricker)),rep('yes',nrow(dispersal_ricker)),dispersal_ricker$Ntp1,row.names = 1:nrow(dispersal_ricker))
+names(dispersal_ricker) = names(ricker)
+
+# Combine experiment data
+ricker = rbind(ricker,dispersal_ricker)
+
+#require(ggplot2)
+#ggplot(aes(x=initial_count,y=final_count),data=ricker) + geom_point() +
+#   xlab("N(t)") +
+#   ylab("N(t+1)") +
+#   theme_classic(base_size = 14, base_family = "")+ 
+#   geom_smooth(method='loess')  
+```
+
+
+\FloatBarrier
+
+
+```{r,echo=F,warning=F,message=F,cache=T,fig.cap='Number of adults after one generation, N(t+1), versus the initial number of adults, N(t). The open points represent simulated data from the best fit model. The closed points represent the experimental data.\\label{fig:ricker}'}
+
+
+# Put in code to fit ricker
+# Should just include best fit Ricker model on graph with actual data...
+
+source("../scripts/model_fitting/Ricker.r")
+source("../scripts/model_fitting/Ricker_pmf.r")
+source("../scripts/model_fitting/Ricker_nll.r")
+library(stats4) #mle
+
+Ntp1 <- round(ricker$final_count)
+Nt <-  ricker$initial_count
+  
+llfit_ricker <- mle( Ricker_nbinombinomgamma.nll,start=list(lnR=log(1),lnalpha=log(0.001),
+             lnkD=log(1),lnkE=log(1)) )
+#summary(llfit)
+phat_ricker <- exp(coef(llfit_ricker))
+names(phat_ricker) <- list("R","alpha","kD","kE")
+#phat
+#logLik(llfit)
+#vcov(llfit)
+#plot(profile(llfit), absVal=FALSE)
+confint_ricker <- confint(profile(llfit_ricker))#;Sys.time()-aaa
+#NBBg_AIC <- AIC(llfit)
+#NBBg_AIC
+
+
+
+RickerStSexBS_DEhB <- function(Nt, R, alpha, kD, kE, p=0.5) {
+  # Heterogeneity in birth rate/DI mortality between times or locations
+  Rtx <- rgamma(length(Nt),shape=kE,scale=R/kE)
+  females <- rbinom(length(Nt),Nt,p)
+  # Heterogeneity in individual birth rate plus density independent survival
+  # (R = births*(1-mortality)*(1/p); mortality is binomial, so compound distribution
+  # is negative binomial with mean (1/p)*R*Nt)
+  births <- rnbinom( length(Nt), size = kD * females + (females==0),
+                     mu = (1/p) * females * Rtx ) # Add 1 to size when females=0 to avoid NaN's.
+  # Density dependent survival
+  survivors <- rbinom( length(Nt), births, exp( -1 * alpha * Nt ) )
+  return(survivors)
+}
+
+
+initial_pop = seq(0,1000,by=1)
+endings=RickerStSexBS_DEhB(initial_pop, phat_ricker[1], phat_ricker[2], phat_ricker[3], phat_ricker[4], p=0.5) 
+plot(initial_pop,endings,ylim=c(0,1200),xlim=c(0,1200),ylab='N(t+1)',xlab='N(t)',las=1,cex.lab=1.2)
+points(Nt,Ntp1,col='red',pch=16)
+legend('topright',legend = c('Simulation','Experimental'),col = c('black','red'),pch=c(1,16),cex=1.2)
+
+```
+
+\FloatBarrier
+
+
+
+
+```{r tab:param_table,echo=F,message=F,warning=F}
+#require(xtable)
+require(knitr)
+require(kableExtra)
+options(knitr.kable.NA = '')
+
+Notation <- c(names(phat_dispersal),names(phat_ricker))
+Description <- c('dispersal shape parameter','dispersal variance parameter','mean density-independent per capita growth rate','mean density-dependent parameter','shape parameter of the gamma distribution for demographic heterogeneity','shape parameter of the gamma distribution for environmental stochasticity')
+Estimate <- c(as.numeric(phat_dispersal),as.numeric(phat_ricker))
+Estimate_ln <- c(NA,NA,log(Estimate[3:6]))
+Std_Error <- as.numeric(c(sqrt(diag(llfit@vcov)), sqrt(diag(llfit_ricker@vcov))))
+Lower_Conf <- c(as.numeric(confint_dispersal[1:2,1]),as.numeric(confint_ricker[1:4,1]))
+Upper_Conf <- c(as.numeric(confint_dispersal[1:2,2]),as.numeric(confint_ricker[1:4,2]))
+
+param_table <- data.frame(Notation,Description,Estimate,Estimate_ln,Std_Error,Lower_Conf,Upper_Conf)
+#print(param_table,align = c('c', 'p{3in}', rep('c',3)),hline.after = c(0),include.rownames = F,
+#      caption="Summary of applications",caption.placement="top")
+kable(param_table,"latex", booktabs = T,caption = "Estimated parameter values for the independently estimated growth (negative binomial-binomial-gamma Ricker) model and dispersal kernel (Poisson dispersal kernel with extra variation given by a Dirichlet-multinomial distribution). Collectively, this model includes four sources of stochasticity: (1) demographic stochasticity (births and mortality), (2) environmental stochasticity (variation in the growth rates), (3) demographic heterogeneity (variation in the birth rate between individuals), and (4) stochasticity in offspring sex. The full model description is given in Eqs 2, 3, 7 in supplement to Melbourne \\& Hastings 2009 and Table 1 in supplement to Melbourne \\& Hastings 2008\\label{tab:param_table}",digits=4) %>%
+  kable_styling(full_width = T,latex_options = "striped") %>%
+  column_spec(2, width = "6cm") %>%
+  kableExtra::landscape()
+```
+
+
+\FloatBarrier
+
+
+
+
+
+
+
+
+
+
+
+```{r,echo=F,eval=F}
+
+
+
+BC <- read.csv('../clean_data/BeetleControl_CompleteData_clean.csv',stringsAsFactors = FALSE)
+BCg1 <- BC[which(BC$gen==1),]
+BCg2 <- BC[which(BC$gen==2),]
+BCg3 <- BC[which(BC$gen==3),]
+BCg4 <- BC[which(BC$gen==4),]
+BCg5 <- BC[which(BC$gen==5),]
+BCg6 <- BC[which(BC$gen==6),]
+
+#BC = subset(BC,BC$gen %in% c(1,3,5))
+
+patch1 <- subset(BC,BC$patch==2)
+  par(mar=c(8,4,0.5,0.5),mfrow=c(1,1))
+  boxplot(patch1$count ~ patch1$hRate + patch1$dTime + patch1$gen ,las=2,ylab=' ')
+  abline(v=seq(0.5,88.5,12),lty=1)
+  abline(v=seq(0.5,100,by=4),lty=2,col='grey')
+  mtext(text = 'Generation 0',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[1:2]),font=2)
+  mtext(text = 'Generation 1',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[2:3]),font=2)
+  mtext(text = 'Generation 2',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[3:4]),font=2)
+  mtext(text = 'Generation 3',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[4:5]),font=2)
+  mtext(text = 'Generation 4',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[5:6]),font=2)
+  mtext(text = 'Generation 5',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[6:7]),font=2)
+  mtext(text = 'Generation 6',side = 3,line = -1.7,at=mean(seq(0.5,88.5,12)[7:8]),font=2)
+  
+  mtext(text = 'HarvestRate.DispersalTime.Gen',side = 1,line =5,adj = 0.5,font=2)
+  mtext(text = 'Total count',side = 2,line =2.5,adj = 0.5,font=2)
+
+# 
+# MeanCount1 <- aggregate(BCg1$count,
+#                         by = list(patches=BCg1$patch),mean)
+# MeanCount2 <- aggregate(BCg2$count,
+#                         by = list(patches=BCg2$patch),mean)
+#           
+# MeanCount <- cbind(MeanCount1,MeanCount2$x)
+# colnames(MeanCount)[2:3] <- c('gen1','gen2')
+# 
+# 
+# require(ggplot2)
+# plot1<-ggplot(MeanCount,aes(x=patches))
+# plot1+geom_col(aes(y=gen1))
+
+
+
+
+```
+
+
+
+
+
+```{r,echo=F,eval=F,warning=FALSE,message=FALSE,error=FALSE,fig.cap='Animated figure caption here'}
+# Plots of full spatial structure instead of just patch 1
+BC <- read.csv('../clean_data/BeetleControl_CompleteData_clean.csv',stringsAsFactors = FALSE)
+
+require(ggplot2)
+library(gganimate)
+require(viridis)
+
+
+#p <- ggplot(data = BC,aes(x=patch,y=count,group=patch,frame=gen)) + geom_boxplot() +facet_grid(hRate~dTime) + scale_y_continuous(limits = c(0, 375))
+
+p <- ggplot(data = BC,aes(x=patch,y=count,frame=gen,color=as.factor(landscape))) + geom_point() +geom_line() +facet_grid(hRate~dTime,labeller = label_both) + scale_y_continuous(limits = c(0, 500)) +  theme_bw(base_size = 14, base_family = "") +
+   scale_color_viridis(discrete = TRUE,begin = 0.2,end=0.8) +
+   labs(color='Replicate',title = 'Generation: ') +
+   xlab("Patch") +
+   ylab("Number of beetles") 
+  
+
+gganimate(p)
+#https://github.com/dgrtwo/gganimate
+#gganimate(p, "BeetleControl_timeseries.html")
+#gganimate(p, "BeetleControl_timeseries.gif")
+```
+
+\FloatBarrier
+
+
+
+
+```{r tab:pop_size_obj_stats, echo=F,results='asis',warning=FALSE,message=FALSE,error=FALSE}
+
+require(dplyr)
+# Statistical model to see how probability of success depends on dispersal and harvest rates
+BC <- read.csv('../clean_data/BeetleControl_CompleteData_clean.csv',stringsAsFactors = F)
+
+BC=na.omit(BC) # Removes replicates that failed in later generations
+
+threshold = 500
+
+BC_totals = BC %>%
+  group_by(gen,landscape,hRate,dTime) %>%
+  summarize(total_pop = sum(count))
+
+BC_totals$success = 0
+BC_totals$success[BC_totals$total_pop<threshold]=1
+
+ml=glm(formula = BC_totals$success~BC_totals$hRate+BC_totals$dTime +BC_totals$hRate*BC_totals$dTime + BC_totals$gen, family = binomial(link='logit'))
+#summary(ml)
+#exp(coef(ml))
+# Use modern dive package and function for pretty table
+
+explained_deviance = 100*(ml$null.deviance-ml$deviance)/ml$null.deviance
+
+require(stargazer)
+stargazer(ml, type = "latex", title="Generalized linear model with binomial error function (and logit link) with management success probability (keeping beetles below 500) as the response variable.\\label{tab:pop_size_obj_stats}", dep.var.labels=c("Probability Success"),covariate.labels=c("Harvest Rate","Dispersal Time","Generation","Harvest*Dispersal","Intercept"),omit.stat=c("LL","ser","f"), no.space=TRUE,ci=TRUE,model.numbers = FALSE,add.lines = list(c("Explained Deviance", paste(round(explained_deviance,2),'\\%',sep = ''))),notes = " ",header=FALSE)
+```
+
+
+\FloatBarrier
+\clearpage
+
+```{r tab:spread_obj_stats, echo=F,results='asis',warning=FALSE,message=FALSE,error=FALSE}
+# Statistical model to see how probability of success depends on dispersal and harvest rates
+BC <- read.csv('../clean_data/BeetleControl_CompleteData_clean.csv',stringsAsFactors = F)
+
+BC=na.omit(BC) # Removes replicates that failed in later generations
+
+threshold = 5
+
+BC$count[BC$patch==1] = BC$count[BC$patch==1]+0.001
+
+BC_totals = BC %>%
+  group_by(gen,landscape,hRate,dTime) %>%
+  summarize(far_patch = tail(which(count>0),1))
+
+BC_totals$success = 0
+BC_totals$success[BC_totals$far_patch<threshold]=1
+
+ml=glm(formula = BC_totals$success~BC_totals$hRate+BC_totals$dTime +BC_totals$hRate*BC_totals$dTime + BC_totals$gen, family = binomial(link='logit'))
+#summary(ml)
+#exp(coef(ml))
+# Use modern dive package and function for pretty table
+
+explained_deviance = 100*(ml$null.deviance-ml$deviance)/ml$null.deviance
+
+require(stargazer)
+stargazer(ml, type = "latex", title="Generalized linear model with binomial error function (and logit link) with management success probability (keeping beetles constrained to patches 1 through 4) as the response variable\\label{tab:spread_obj_stats}.", dep.var.labels=c("Probability Success"),covariate.labels=c("Harvest Rate","Dispersal Time","Generation","Harvest*Dispersal","Intercept"),omit.stat=c("LL","ser","f"), no.space=TRUE,ci=TRUE,model.numbers = FALSE,add.lines = list(c("Explained Deviance", paste(round(explained_deviance,2),'\\%',sep = ''))),notes = " ",header=FALSE)
+```
+
+
+\FloatBarrier
+
+
+
+```{r, echo=F,warning=FALSE,message=FALSE,error=FALSE,cache=T,fig.cap='The effect of changing the management objective for different population thresholds to keep population below for (a) 100 beetles, (b) 400, (c) 700 and (d) 1000 S1\\label{fig:obj_sens}.'}
+
+require(dplyr)
+require(ggplot2)
+require(ggpubr)
+require(ggthemes)
+require(viridis)
+
+# Figure X: assumptions about objectives
+model_output <- read.csv('../model_outputs/simulation_results2.csv',header=T)
+model_totals = model_output %>%
+  group_by(gen,landscape,hRate,dTime) %>%
+  summarize(total_pop = sum(count))
+
+obj_val_vec = seq(100,1000,by=300)
+
+for (iter in 1:length(obj_val_vec)){
+
+obj_val = obj_val_vec[iter]  
+# Build figure 1 with model_output
+
+
+
+# Keeping pop less than 300 beetles by gen 6
+model_totals_success = model_totals %>%
+  filter(gen==6) %>%
+  group_by(landscape,hRate,dTime) %>%
+  summarize(success = sum(total_pop<obj_val)) %>%
+  group_by(hRate,dTime) %>%
+  summarize(percent_success = sum(success)/max(landscape))
+
+model_totals_success$abs_value = abs(model_totals_success$percent_success-0.5)
+model_totals_success$abs_value = (model_totals_success$abs_value- min(model_totals_success$abs_value))/(max(model_totals_success$abs_value)-min(model_totals_success$abs_value))
+
+
+assign(paste('fig',obj_val,sep=''), ggplot(aes(x=hRate,y=percent_success,group=dTime,color=dTime),data=model_totals_success) + geom_line() + scale_color_viridis(begin = 0,end=0.9) + theme_tufte() + theme_classic(base_size = 14, base_family = "") + theme(axis.text = element_text(size=14),text=element_text(size=14),plot.title = element_text(hjust = 0.5,size=14)) +
+  ylab(' ') +
+  xlab(" ") +
+  ggtitle(paste('threshold = ',obj_val,sep = ''))+
+  labs(color="Dispersal time (hours)")  +
+  ylim(0,1) +
+  annotate("text",x=0.8,y=0.1,label=paste('(',letters[iter],')',sep=''),col='black')
+)
+}
+
+
+
+
+figure=ggarrange(fig100, fig400,fig700,fig1000, ncol=2, nrow=2, common.legend = TRUE, legend="top")
+annotate_figure(figure,
+                bottom = text_grob("Harvest rate", color = "black",
+                                   hjust = 0.9,vjust=-1, x = 0.6, size = 14),
+                left = text_grob("Probability of success", color = "black", rot = 90,size=14,vjust=2,hjust=0.4)
+)
+
+```
+
+\FloatBarrier
+
+
+
+```{r, echo=F,fig.cap='Spread rate (patches occupied per generation), probability of successfully keeping the total population size below 300 individuals, and probability of successfully preventing spatial spread past patch three after four generations for different parameter values of the dispersal kernel. The vertical, dashed lines represent the default parameter values noted in table S1\\label{fig:sens_dispersal}.'}
+# Run simulations with dTime = 24, h= 0.5, and examine the effect of changing each parameter value. Then build two plots of management success against changes in the parameter value...
+
+par(mfrow=c(2,3),mar=c(5,5,0.5,0.5),oma=c(1,1,0.5,0.5))
+build_param_sens_plot = function(param){
+
+  
+# Pull in model results
+  param_description = Description[Notation==param]
+  param_default = param_table$Estimate[Notation==param]
+  
+  param_sens_output <- read.csv(paste('../model_outputs/parameter_sensitivity_',param,'.csv',sep=''),stringsAsFactors = FALSE)
+  
+  
+  
+  
+# Spread rates
+spread_speed = param_sens_output %>%
+  filter(gen==4) %>%
+  group_by(landscape,param) %>%
+  summarise(max_patch = ifelse(length(which(count>0)),patch[tail(which(count>0),1)],0.001)/4 ) %>% # Artifically put in a value of 0.1 if entire landscape goes extinct...
+  group_by(param) %>%
+  summarise(avg_dist_spread = mean(max_patch),sd_dist_spread = sd(max_patch))
+
+
+# Organize data and build plot
+total_counts = param_sens_output %>%
+  group_by(gen,landscape,param) %>%
+  summarize(total_pop = sum(count))
+
+success_pop_count = total_counts %>%
+  filter(gen==4) %>%
+  group_by(param) %>%
+  summarize(success = sum(total_pop<300)) %>%
+  group_by(param) %>%
+  summarize(percent_success = sum(success)/ length(unique(total_counts$landscape)))
+
+
+# Controlling population spread
+
+total_counts = param_sens_output %>%
+  filter(gen==4,patch %in% c(4,5,6)) %>%
+  group_by(gen,landscape,param) %>%
+  summarize(total_pop = sum(count))
+
+success_stop_spread = total_counts %>%
+  group_by(param) %>%
+  summarize(success = sum(total_pop<1)) %>%
+  group_by(param) %>%
+  summarize(percent_success = sum(success)/ length(unique(total_counts$landscape)))
+
+
+# Build plot
+#par(mfrow=c(1,3))
+
+with(data=spread_speed,
+     plot(x= param, y = avg_dist_spread,las=1,ylab='Spread speed',xlab='',pch=16,ylim=c(0,1.5),cex=1.2,cex.lab=1.4)
+)
+abline(v=param_default,lty=2)
+
+with(data=success_pop_count,
+     plot(x= param, y = percent_success,las=1,ylab='Percent success',xlab='',pch=16,ylim=c(0,1),cex=1.2,cex.lab=1.4)
+)
+abline(v=param_default,lty=2)
+mtext(text = paste(param_description,' (',param,')',sep=''),side = 1,line = 3,outer = F)
+
+with(data=success_stop_spread,
+     plot(x= param, y = percent_success,las=1,ylab='Percent success',xlab='',pch=16,ylim=c(0,1),cex=1.2,cex.lab=1.4)
+)
+abline(v=param_default,lty=2)
+
+
+
+
+}
+
+build_param_sens_plot('D')
+build_param_sens_plot('s')
+
+
+
+
+
+
+```
+
+\FloatBarrier
+
+```{r, echo=F,fig.height=8,fig.cap='Spread rate (patches occupied per generation), probability of successfully keeping the total population size below 300 individuals, and probability of successfully preventing spatial spread past patch three after four generations for different parameter values of the Ricker recruitment function. The vertical, dashed lines represent the default parameter values noted in table S1\\label{fig:sens_ricker}.'}
+# Run simulations with dTime = 24, h= 0.5, and examine the effect of changing each parameter value. Then build two plots of management success against changes in the parameter value...
+
+
+
+par(mfrow=c(4,3),mar=c(5,5,0.5,0.5),oma=c(1,1,0.5,0.5))
+build_param_sens_plot('R')
+build_param_sens_plot('kD')
+build_param_sens_plot('kE')
+build_param_sens_plot('alpha')
+
+
+
+```
+
+
+\FloatBarrier
+
+\movie{Animation of number of beetles in each patch with each frame representing one generation over the course of the experiment. Each subplot is a different combination of dispersal time (hours) and harvesting rate.}
+

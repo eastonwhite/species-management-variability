@@ -1,0 +1,14 @@
+base
+emdbook
+gtools
+deSolve
+dplyr
+knitr
+kableExtra
+stargazer
+ggplot2
+magrittr
+ggpubr
+ggthemes
+viridisLite
+viridis
